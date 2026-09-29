@@ -6,10 +6,22 @@ const Question = require('./models/Question')
 const Score = require('./models/Score') // ⭐️ Score modelini ekledik
 
 const app = express()
-app.use(cors())
+app.use(cors({ origin: process.env.CORS_ORIGIN || 'http://localhost:3000' }))
 app.use(express.json())
 
-mongoose.connect('mongodb://127.0.0.1:27017/af-quiz')
+// Sorgu filtrelerindeki $ne/$gt gibi operatörleri temizle (NoSQL injection önlemi)
+mongoose.set('sanitizeFilter', true)
+
+// Soru yükleme / skor silme gibi yönetim işlemleri için anahtar (ADMIN_TOKEN ortam değişkeni)
+const requireAdmin = (req, res, next) => {
+  const token = process.env.ADMIN_TOKEN
+  if (!token || req.get('x-admin-token') !== token) {
+    return res.status(403).json({ error: 'Bu işlem için yetkiniz yok' })
+  }
+  next()
+}
+
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/af-quiz')
   .then(() => console.log('MongoDB bağlantısı başarılı'))
   .catch(err => console.error('MongoDB bağlantı hatası:', err))
 
@@ -25,7 +37,7 @@ app.get('/api/questions', async (req, res) => {
 })
 
 // 📥 Soruları JSON dosyasından veritabanına yükle
-app.post('/api/import', async (req, res) => {
+app.post('/api/import', requireAdmin, async (req, res) => {
   try {
     const data = fs.readFileSync('./data/af_quiz_questions_50.json', 'utf-8')
     const questions = JSON.parse(data)
@@ -42,7 +54,15 @@ app.post('/api/import', async (req, res) => {
 // 📌 PUAN KAYDET (Tekrarı engelle)
 app.post('/api/scores', async (req, res) => {
   try {
-    const { username, score, total, avatar } = req.body
+    const { username, score, total, avatar } = req.body ?? {}
+
+    // Tip ve aralık doğrulaması: sahte/obje içeren skorlar reddedilir
+    const validText = (v, max) => typeof v === 'string' && v.trim().length > 0 && v.length <= max
+    if (!validText(username, 30) || !validText(avatar, 200) ||
+        !Number.isInteger(score) || !Number.isInteger(total) ||
+        total <= 0 || total > 100 || score < 0 || score > total) {
+      return res.status(400).json({ error: 'Geçersiz skor verisi' })
+    }
 
     // Aynı kullanıcı aynı skorla varsa tekrar kaydetme
     const existing = await Score.findOne({ username, score, total, avatar })
@@ -77,7 +97,7 @@ app.listen(5000, () => {
 })
 
 // 🧹 Tek bir skoru sil
-app.delete('/api/scores/:id', async (req, res) => {
+app.delete('/api/scores/:id', requireAdmin, async (req, res) => {
   try {
     await Score.findByIdAndDelete(req.params.id)
     res.json({ message: 'Skor silindi' })
