@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        ports: ["27017:27017"]
+    defaults:
+      run:
+        working-directory: server
+    env:
+      ADMIN_TOKEN: ci-only-admin-token
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - name: Smoke test
+        run: |
+          node index.js > server.log 2>&1 &
+          for i in $(seq 1 30); do curl -s localhost:5000/api/scores >/dev/null && break; sleep 1; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:5000/api/scores -H 'Content-Type: application/json' -d '{"username":"ci","score":7,"total":10,"avatar":"a.png"}')" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:5000/api/scores -H 'Content-Type: application/json' -d '{"username":{"$ne":null},"score":7,"total":10,"avatar":"a"}')" = "400"
+          test "$(curl -sf localhost:5000/api/scores | node -pe 'JSON.parse(require("fs").readFileSync(0)).length')" = "1"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE localhost:5000/api/scores/000000000000000000000000)" = "403"
+          echo "smoke test passed"
+      - if: failure()
+        run: cat server.log
